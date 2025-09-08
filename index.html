@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Video Maker</title>
+</head>
+<body>
+
+    <div>
+        <h1>Music Video Maker</h1>
+        <p>Upload an audio file and it will spit out a download with a music video with the oscilloscope as the video.</p>
+        
+        <input type="file" id="audioFile" accept="audio/*">
+        
+        <div>
+            <canvas id="visualizerCanvas" width="1920" height="1080"></canvas>
+        </div>
+              
+        <audio id="audioPlayer" hidden></audio>
+        <a id="downloadLink" hidden></a>
+    </div>
+    
+    <script>
+        const audioFile = document.getElementById('audioFile');
+        const visualizerCanvas = document.getElementById('visualizerCanvas');
+        const statusMessage = document.getElementById('statusMessage');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const downloadLink = document.getElementById('downloadLink');
+
+        const canvasCtx = visualizerCanvas.getContext('2d');
+        let audioContext;
+        let mediaRecorder;
+        let recordedChunks = [];
+        let isRecording = false;
+        let visualizationData = [];
+        let frameInterval;
+
+        const setStatus = (message) => {
+            statusMessage.textContent = message;
+        };
+
+        const drawVisualizerFrame = (dataArray) => {
+            canvasCtx.fillStyle = '#000000';
+            canvasCtx.fillRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+            
+            canvasCtx.lineWidth = 2;
+            canvasCtx.strokeStyle = '#00FF00';
+            canvasCtx.imageSmoothingEnabled = false;
+
+            canvasCtx.beginPath();
+            const sliceWidth = visualizerCanvas.width * 1.0 / dataArray.length;
+            let x = 0;
+
+            for (let i = 0; i < dataArray.length; i++) {
+                const v = dataArray[i] / 128.0;
+                const y = v * visualizerCanvas.height / 2;
+
+                if (i === 0) {
+                    canvasCtx.moveTo(x, y);
+                } else {
+                    canvasCtx.lineTo(x, y);
+                }
+                x += sliceWidth;
+            }
+
+            canvasCtx.lineTo(visualizerCanvas.width, visualizerCanvas.height / 2);
+            canvasCtx.stroke();
+        };
+
+        const processAudioOffline = (buffer) => {
+            setStatus('Processing audio. This may take a moment...');
+            visualizationData = [];
+            const audioData = buffer.getChannelData(0);
+            const frameRate = 60;
+            const samplesPerFrame = Math.floor(buffer.sampleRate / frameRate);
+
+            for (let i = 0; i < audioData.length; i += samplesPerFrame) {
+                const chunk = audioData.slice(i, i + samplesPerFrame);
+                const visualChunk = new Uint8Array(chunk.length);
+                for (let j = 0; j < chunk.length; j++) {
+                    visualChunk[j] = (chunk[j] + 1) * 127.5;
+                }
+                visualizationData.push(visualChunk);
+            }
+            
+            setStatus('Audio processing complete. Starting video recording automatically.');
+            startRecording();
+        };
+
+        const setupAudio = async (audioUrl) => {
+            if (audioContext) audioContext.close();
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            audioPlayer.src = audioUrl;
+            
+            try {
+                const audioBuffer = await fetch(audioUrl).then(res => res.arrayBuffer()).then(arrayBuffer => audioContext.decodeAudioData(arrayBuffer));
+                processAudioOffline(audioBuffer);
+            } catch (error) {
+                setStatus('Failed to load audio file. Please try a different file.');
+                console.error('Error loading audio:', error);
+            }
+        };
+
+        const startRecording = () => {
+            if (isRecording) return;
+            
+            const audioDestination = audioContext.createMediaStreamDestination();
+            const source = audioContext.createMediaElementSource(audioPlayer);
+            source.connect(audioDestination);
+
+            const visualizerStream = visualizerCanvas.captureStream(60);
+            const combinedStream = new MediaStream([
+                ...visualizerStream.getVideoTracks(),
+                ...audioDestination.stream.getAudioTracks()
+            ]);
+
+            mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
+            recordedChunks = [];
+            
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    recordedChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const videoUrl = URL.createObjectURL(blob);
+                downloadLink.href = videoUrl;
+                downloadLink.download = 'music_video.webm';
+                downloadLink.click();
+                setStatus('Recording finished. Your download should start automatically.');
+            };
+
+            mediaRecorder.start();
+            audioPlayer.currentTime = 0;
+            audioPlayer.play();
+            isRecording = true;
+            setStatus('Recording in progress...');
+
+            let frameIndex = 0;
+            frameInterval = setInterval(() => {
+                if (frameIndex < visualizationData.length) {
+                    drawVisualizerFrame(visualizationData[frameIndex]);
+                    frameIndex++;
+                } else {
+                    stopRecording();
+                }
+            }, 1000 / 60);
+        };
+
+        const stopRecording = () => {
+            clearInterval(frameInterval);
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                audioPlayer.pause();
+            }
+            isRecording = false;
+        };
+
+        audioFile.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const audioUrl = URL.createObjectURL(file);
+                setupAudio(audioUrl);
+            }
+        });
+    </script>
+</body>
+</html>
